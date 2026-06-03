@@ -60,16 +60,44 @@ function useTodos() {
     if (!error) setTodos(prev => prev.filter(t => !t.done));
   };
 
-  return { todos, loaded, error, add, toggle, remove, clearDone };
+  const update = async (id, text) => {
+    const { error } = await supabase
+      .from("todos")
+      .update({ text })
+      .eq("id", id);
+
+    if (!error) setTodos(prev =>
+      prev.map(t => t.id === id ? { ...t, text } : t)
+    );
+  };
+
+  return { todos, loaded, error, add, toggle, remove, clearDone, update };
 }
 
 export default function App() {
-  const { todos, loaded, error, add, toggle, remove, clearDone } = useTodos();
+  const { todos, loaded, error, add, toggle, remove, clearDone, update } = useTodos();
   const [input, setInput] = useState("");
   const [filter, setFilter] = useState("Alle");
   const [removing, setRemoving] = useState(null);
   const [toggling, setToggling] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [editText, setEditText] = useState("");
   const inputRef = useRef(null);
+  const editRef = useRef(null);
+
+  const startEdit = (todo) => {
+    setEditing(todo.id);
+    setEditText(todo.text);
+    setTimeout(() => editRef.current?.focus(), 0);
+  };
+
+  const commitEdit = async () => {
+    const text = editText.trim();
+    if (text && text !== todos.find(t => t.id === editing)?.text) {
+      await update(editing, text);
+    }
+    setEditing(null);
+  };
 
   const handleAdd = () => {
     const text = input.trim();
@@ -226,13 +254,35 @@ export default function App() {
                     )}
                   </button>
 
-                  <span style={{
-                    ...s.taskText,
-                    color: todo.done ? "#8e8e93" : "#000",
-                    textDecoration: todo.done ? "line-through" : "none",
-                  }}>
-                    {todo.text}
-                  </span>
+                  {editing === todo.id ? (
+                    <input
+                      ref={editRef}
+                      style={{
+                        ...s.taskText,
+                        ...s.editInput,
+                        color: todo.done ? "#8e8e93" : "#000",
+                        textDecoration: todo.done ? "line-through" : "none",
+                      }}
+                      value={editText}
+                      onChange={e => setEditText(e.target.value)}
+                      onBlur={commitEdit}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") commitEdit();
+                        if (e.key === "Escape") setEditing(null);
+                      }}
+                    />
+                  ) : (
+                    <span
+                      style={{
+                        ...s.taskText,
+                        color: todo.done ? "#8e8e93" : "#000",
+                        textDecoration: todo.done ? "line-through" : "none",
+                      }}
+                      onDoubleClick={() => !todo.done && startEdit(todo)}
+                    >
+                      {todo.text}
+                    </span>
+                  )}
 
                   <button style={s.deleteCircle} onClick={() => handleRemove(todo.id)}>
                     <span style={s.deleteX}>×</span>
@@ -448,5 +498,15 @@ const s = {
     fontSize: 13,
     color: "#8e8e93",
     padding: "8px 0 0",
+  },
+  editInput: {
+    border: "none",
+    outline: "none",
+    background: "transparent",
+    fontFamily: "inherit",
+    padding: 0,
+    margin: 0,
+    width: "100%",
+    caretColor: "#007AFF",
   },
 };

@@ -1,64 +1,103 @@
 import { useState, useEffect, useRef } from "react";
+import { supabase } from "./supabase";
 
-const STORAGE_KEY = "ios-todo-v1";
 const FILTERS = ["Alle", "Offen", "Erledigt"];
 
 function useTodos() {
-  const [todos, setTodos] = useState(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [todos, setTodos] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(null);
 
-  const save = (next) => {
-    setTodos(next);
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    } catch {}
+  const load = async () => {
+    const { data, error } = await supabase
+      .from("todos")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) { setError(error.message); }
+    else { setTodos(data); }
+    setLoaded(true);
   };
 
-  return { todos, save };
+  useEffect(() => { load(); }, []);
+
+  const add = async (text) => {
+    const { data, error } = await supabase
+      .from("todos")
+      .insert({ text, done: false })
+      .select()
+      .single();
+
+    if (!error) setTodos(prev => [data, ...prev]);
+  };
+
+  const toggle = async (id, done) => {
+    const { error } = await supabase
+      .from("todos")
+      .update({ done: !done })
+      .eq("id", id);
+
+    if (!error) setTodos(prev =>
+      prev.map(t => t.id === id ? { ...t, done: !done } : t)
+    );
+  };
+
+  const remove = async (id) => {
+    const { error } = await supabase
+      .from("todos")
+      .delete()
+      .eq("id", id);
+
+    if (!error) setTodos(prev => prev.filter(t => t.id !== id));
+  };
+
+  const clearDone = async () => {
+    const { error } = await supabase
+      .from("todos")
+      .delete()
+      .eq("done", true);
+
+    if (!error) setTodos(prev => prev.filter(t => !t.done));
+  };
+
+  return { todos, loaded, error, add, toggle, remove, clearDone };
 }
 
 export default function App() {
-  const { todos, save } = useTodos();
+  const { todos, loaded, error, add, toggle, remove, clearDone } = useTodos();
   const [input, setInput] = useState("");
   const [filter, setFilter] = useState("Alle");
   const [removing, setRemoving] = useState(null);
   const [toggling, setToggling] = useState(null);
   const inputRef = useRef(null);
 
-  const add = () => {
+  const handleAdd = () => {
     const text = input.trim();
     if (!text) return;
-    save([{ id: Date.now(), text, done: false }, ...todos]);
+    add(text);
     setInput("");
   };
 
-  const toggle = async (id) => {
+  const handleToggle = async (id, done) => {
     setToggling(id);
-    await new Promise((r) => setTimeout(r, 120));
-    save(todos.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
+    await toggle(id, done);
     setToggling(null);
   };
 
-  const remove = async (id) => {
+  const handleRemove = async (id) => {
     setRemoving(id);
-    await new Promise((r) => setTimeout(r, 280));
-    save(todos.filter((t) => t.id !== id));
+    await new Promise(r => setTimeout(r, 280));
+    await remove(id);
     setRemoving(null);
   };
 
-  const filtered = todos.filter((t) => {
+  const filtered = todos.filter(t => {
     if (filter === "Offen") return !t.done;
     if (filter === "Erledigt") return t.done;
     return true;
   });
 
-  const openCount = todos.filter((t) => !t.done).length;
+  const openCount = todos.filter(t => !t.done).length;
 
   return (
     <div style={s.root}>
@@ -77,13 +116,20 @@ export default function App() {
       {/* Large title */}
       <div style={s.navBar}>
         <h1 style={s.largeTitle}>Aufgaben</h1>
-        <div style={s.badge}>{openCount}</div>
+        <div style={s.badge}>{loaded ? openCount : "–"}</div>
       </div>
+
+      {/* Error */}
+      {error && (
+        <div style={s.errorBanner}>
+          Verbindungsfehler: {error}
+        </div>
+      )}
 
       {/* Segmented control */}
       <div style={s.segmentedWrapper}>
         <div style={s.segmented}>
-          {FILTERS.map((f) => (
+          {FILTERS.map(f => (
             <button
               key={f}
               style={{
@@ -111,8 +157,8 @@ export default function App() {
               style={s.input}
               placeholder="Aufgabe eingeben…"
               value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && add()}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && handleAdd()}
             />
             <button
               style={{
@@ -120,7 +166,7 @@ export default function App() {
                 opacity: input.trim() ? 1 : 0.35,
                 transform: input.trim() ? "scale(1)" : "scale(0.92)",
               }}
-              onClick={add}
+              onClick={handleAdd}
               disabled={!input.trim()}
             >
               <span style={s.addBtnInner}>+</span>
@@ -137,7 +183,11 @@ export default function App() {
           </div>
         )}
         <div style={s.card}>
-          {filtered.length === 0 ? (
+          {!loaded ? (
+            <div style={s.emptyState}>
+              <div style={s.emptyText}>Lädt…</div>
+            </div>
+          ) : filtered.length === 0 ? (
             <div style={s.emptyState}>
               <div style={s.emptyIcon}>{filter === "Erledigt" ? "✓" : "☀️"}</div>
               <div style={s.emptyText}>
@@ -154,8 +204,7 @@ export default function App() {
                   style={{
                     ...s.row,
                     opacity: removing === todo.id ? 0 : 1,
-                    transform:
-                      removing === todo.id ? "translateX(-20px)" : "translateX(0)",
+                    transform: removing === todo.id ? "translateX(-20px)" : "translateX(0)",
                     transition: "opacity 0.28s ease, transform 0.28s ease",
                   }}
                 >
@@ -167,32 +216,25 @@ export default function App() {
                       transform: toggling === todo.id ? "scale(0.82)" : "scale(1)",
                       transition: "all 0.15s ease",
                     }}
-                    onClick={() => toggle(todo.id)}
+                    onClick={() => handleToggle(todo.id, todo.done)}
                   >
                     {todo.done && (
                       <svg width="11" height="9" viewBox="0 0 11 9" fill="none">
-                        <path
-                          d="M1 4L4 7.5L10 1"
-                          stroke="white"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
+                        <path d="M1 4L4 7.5L10 1" stroke="white" strokeWidth="2"
+                          strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
                     )}
                   </button>
 
-                  <span
-                    style={{
-                      ...s.taskText,
-                      color: todo.done ? "#8e8e93" : "#000",
-                      textDecoration: todo.done ? "line-through" : "none",
-                    }}
-                  >
+                  <span style={{
+                    ...s.taskText,
+                    color: todo.done ? "#8e8e93" : "#000",
+                    textDecoration: todo.done ? "line-through" : "none",
+                  }}>
                     {todo.text}
                   </span>
 
-                  <button style={s.deleteCircle} onClick={() => remove(todo.id)}>
+                  <button style={s.deleteCircle} onClick={() => handleRemove(todo.id)}>
                     <span style={s.deleteX}>×</span>
                   </button>
                 </div>
@@ -202,16 +244,16 @@ export default function App() {
           )}
         </div>
 
-        {todos.some((t) => t.done) && (
-          <button style={s.clearBtn} onClick={() => save(todos.filter((t) => !t.done))}>
+        {todos.some(t => t.done) && (
+          <button style={s.clearBtn} onClick={clearDone}>
             Erledigte löschen
           </button>
         )}
       </div>
 
-      {todos.length > 0 && (
+      {todos.length > 0 && loaded && (
         <div style={s.footer}>
-          {todos.filter((t) => t.done).length} von {todos.length} erledigt
+          {todos.filter(t => t.done).length} von {todos.length} erledigt
         </div>
       )}
     </div>
@@ -271,6 +313,15 @@ const s = {
     fontWeight: 700,
     padding: "0 7px",
     marginBottom: 2,
+  },
+  errorBanner: {
+    margin: "0 16px 12px",
+    background: "#fff2f2",
+    border: "1px solid #ffcccc",
+    borderRadius: 10,
+    padding: "10px 14px",
+    fontSize: 13,
+    color: "#cc0000",
   },
   segmentedWrapper: { padding: "0 16px 16px" },
   segmented: {

@@ -3,6 +3,28 @@ import { supabase } from "./supabase";
 
 const FILTERS = ["Alle", "Offen", "Erledigt"];
 
+const PRIORITY = {
+  niedrig: { label: "Niedrig", color: "#34c759" },
+  mittel:  { label: "Mittel",  color: "#ff9500" },
+  hoch:    { label: "Hoch",    color: "#ff3b30" },
+};
+
+function formatDate(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr + "T00:00:00");
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diff = Math.round((d - today) / 86400000);
+  if (diff === 0) return { label: "Heute", overdue: false };
+  if (diff === 1) return { label: "Morgen", overdue: false };
+  if (diff === -1) return { label: "Gestern", overdue: true };
+  if (diff < 0) return { label: `${Math.abs(diff)} Tage überfällig`, overdue: true };
+  return {
+    label: d.toLocaleDateString("de-DE", { day: "numeric", month: "short" }),
+    overdue: false,
+  };
+}
+
 function useTodos() {
   const [todos, setTodos] = useState([]);
   const [loaded, setLoaded] = useState(false);
@@ -21,10 +43,10 @@ function useTodos() {
 
   useEffect(() => { load(); }, []);
 
-  const add = async (text) => {
+  const add = async (text, priority, due_date) => {
     const { data, error } = await supabase
       .from("todos")
-      .insert({ text, done: false })
+      .insert({ text, done: false, priority: priority || null, due_date: due_date || null })
       .select()
       .single();
 
@@ -60,14 +82,14 @@ function useTodos() {
     if (!error) setTodos(prev => prev.filter(t => !t.done));
   };
 
-  const update = async (id, text) => {
+  const update = async (id, fields) => {
     const { error } = await supabase
       .from("todos")
-      .update({ text })
+      .update(fields)
       .eq("id", id);
 
     if (!error) setTodos(prev =>
-      prev.map(t => t.id === id ? { ...t, text } : t)
+      prev.map(t => t.id === id ? { ...t, ...fields } : t)
     );
   };
 
@@ -76,34 +98,41 @@ function useTodos() {
 
 export default function App() {
   const { todos, loaded, error, add, toggle, remove, clearDone, update } = useTodos();
+
+  // Add form
   const [input, setInput] = useState("");
+  const [newPriority, setNewPriority] = useState(null);
+  const [newDate, setNewDate] = useState("");
+  const [showExtras, setShowExtras] = useState(false);
+
+  // List state
   const [filter, setFilter] = useState("Alle");
   const [removing, setRemoving] = useState(null);
   const [toggling, setToggling] = useState(null);
+
+  // Inline editing
   const [editing, setEditing] = useState(null);
   const [editText, setEditText] = useState("");
+  const [editPriority, setEditPriority] = useState(null);
+  const [editDate, setEditDate] = useState("");
+
   const inputRef = useRef(null);
   const editRef = useRef(null);
 
-  const startEdit = (todo) => {
-    setEditing(todo.id);
-    setEditText(todo.text);
-    setTimeout(() => editRef.current?.focus(), 0);
-  };
-
-  const commitEdit = async () => {
-    const text = editText.trim();
-    if (text && text !== todos.find(t => t.id === editing)?.text) {
-      await update(editing, text);
-    }
-    setEditing(null);
+  const handleInputChange = (val) => {
+    setInput(val);
+    if (val.trim() && !showExtras) setShowExtras(true);
+    if (!val.trim()) { setShowExtras(false); setNewPriority(null); setNewDate(""); }
   };
 
   const handleAdd = () => {
     const text = input.trim();
     if (!text) return;
-    add(text);
+    add(text, newPriority, newDate || null);
     setInput("");
+    setNewPriority(null);
+    setNewDate("");
+    setShowExtras(false);
   };
 
   const handleToggle = async (id, done) => {
@@ -117,6 +146,26 @@ export default function App() {
     await new Promise(r => setTimeout(r, 280));
     await remove(id);
     setRemoving(null);
+  };
+
+  const startEdit = (todo) => {
+    setEditing(todo.id);
+    setEditText(todo.text);
+    setEditPriority(todo.priority || null);
+    setEditDate(todo.due_date || "");
+    setTimeout(() => editRef.current?.focus(), 0);
+  };
+
+  const commitEdit = async () => {
+    const text = editText.trim();
+    const todo = todos.find(t => t.id === editing);
+    if (!todo) { setEditing(null); return; }
+    const fields = {};
+    if (text && text !== todo.text) fields.text = text;
+    if (editPriority !== todo.priority) fields.priority = editPriority;
+    if ((editDate || null) !== (todo.due_date || null)) fields.due_date = editDate || null;
+    if (Object.keys(fields).length > 0) await update(editing, fields);
+    setEditing(null);
   };
 
   const filtered = todos.filter(t => {
@@ -185,7 +234,7 @@ export default function App() {
               style={s.input}
               placeholder="Aufgabe eingeben…"
               value={input}
-              onChange={e => setInput(e.target.value)}
+              onChange={e => handleInputChange(e.target.value)}
               onKeyDown={e => e.key === "Enter" && handleAdd()}
             />
             <button
@@ -200,6 +249,33 @@ export default function App() {
               <span style={s.addBtnInner}>+</span>
             </button>
           </div>
+
+          {showExtras && (
+            <div style={s.extrasRow}>
+              <div style={s.extrasLeft}>
+                {Object.entries(PRIORITY).map(([key, { label, color }]) => (
+                  <button
+                    key={key}
+                    style={{
+                      ...s.priorityPill,
+                      background: newPriority === key ? color : "transparent",
+                      color: newPriority === key ? "#fff" : color,
+                      border: `1.5px solid ${color}`,
+                    }}
+                    onClick={() => setNewPriority(newPriority === key ? null : key)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <input
+                type="date"
+                style={s.dateInput}
+                value={newDate}
+                onChange={e => setNewDate(e.target.value)}
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -226,71 +302,136 @@ export default function App() {
               </div>
             </div>
           ) : (
-            filtered.map((todo, i) => (
-              <div key={todo.id}>
-                <div
-                  style={{
-                    ...s.row,
-                    opacity: removing === todo.id ? 0 : 1,
-                    transform: removing === todo.id ? "translateX(-20px)" : "translateX(0)",
-                    transition: "opacity 0.28s ease, transform 0.28s ease",
-                  }}
-                >
-                  <button
+            filtered.map((todo, i) => {
+              const dateInfo = formatDate(todo.due_date);
+              const prio = todo.priority ? PRIORITY[todo.priority] : null;
+              const isEditing = editing === todo.id;
+
+              return (
+                <div key={todo.id}>
+                  <div
                     style={{
-                      ...s.circle,
-                      borderColor: todo.done ? "#007AFF" : "#c7c7cc",
-                      background: todo.done ? "#007AFF" : "transparent",
-                      transform: toggling === todo.id ? "scale(0.82)" : "scale(1)",
-                      transition: "all 0.15s ease",
+                      ...s.row,
+                      opacity: removing === todo.id ? 0 : 1,
+                      transform: removing === todo.id ? "translateX(-20px)" : "translateX(0)",
+                      transition: "opacity 0.28s ease, transform 0.28s ease",
+                      alignItems: isEditing ? "flex-start" : "center",
                     }}
-                    onClick={() => handleToggle(todo.id, todo.done)}
                   >
-                    {todo.done && (
-                      <svg width="11" height="9" viewBox="0 0 11 9" fill="none">
-                        <path d="M1 4L4 7.5L10 1" stroke="white" strokeWidth="2"
-                          strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    )}
-                  </button>
-
-                  {editing === todo.id ? (
-                    <input
-                      ref={editRef}
+                    <button
                       style={{
-                        ...s.taskText,
-                        ...s.editInput,
-                        color: todo.done ? "#8e8e93" : "#000",
-                        textDecoration: todo.done ? "line-through" : "none",
+                        ...s.circle,
+                        borderColor: todo.done ? "#007AFF" : (prio ? prio.color : "#c7c7cc"),
+                        background: todo.done ? "#007AFF" : "transparent",
+                        transform: toggling === todo.id ? "scale(0.82)" : "scale(1)",
+                        transition: "all 0.15s ease",
+                        marginTop: isEditing ? 2 : 0,
                       }}
-                      value={editText}
-                      onChange={e => setEditText(e.target.value)}
-                      onBlur={commitEdit}
-                      onKeyDown={e => {
-                        if (e.key === "Enter") commitEdit();
-                        if (e.key === "Escape") setEditing(null);
-                      }}
-                    />
-                  ) : (
-                    <span
-                      style={{
-                        ...s.taskText,
-                        color: todo.done ? "#8e8e93" : "#000",
-                        textDecoration: todo.done ? "line-through" : "none",
-                      }}
-                      onDoubleClick={() => !todo.done && startEdit(todo)}
+                      onClick={() => handleToggle(todo.id, todo.done)}
                     >
-                      {todo.text}
-                    </span>
-                  )}
+                      {todo.done && (
+                        <svg width="11" height="9" viewBox="0 0 11 9" fill="none">
+                          <path d="M1 4L4 7.5L10 1" stroke="white" strokeWidth="2"
+                            strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      )}
+                    </button>
 
-                  <button style={s.deleteCircle} onClick={() => handleRemove(todo.id)}>
-                    <span style={s.deleteX}>×</span>
-                  </button>
+                    {/* Text + meta */}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {isEditing ? (
+                        <>
+                          <input
+                            ref={editRef}
+                            style={{ ...s.taskText, ...s.editInput,
+                              color: todo.done ? "#8e8e93" : "#000",
+                              textDecoration: todo.done ? "line-through" : "none",
+                            }}
+                            value={editText}
+                            onChange={e => setEditText(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === "Enter") commitEdit();
+                              if (e.key === "Escape") setEditing(null);
+                            }}
+                          />
+                          {/* Edit extras */}
+                          <div style={{ ...s.extrasRow, padding: "6px 0 4px", borderTop: "none" }}>
+                            <div style={s.extrasLeft}>
+                              {Object.entries(PRIORITY).map(([key, { label, color }]) => (
+                                <button
+                                  key={key}
+                                  style={{
+                                    ...s.priorityPill,
+                                    fontSize: 11,
+                                    padding: "2px 7px",
+                                    background: editPriority === key ? color : "transparent",
+                                    color: editPriority === key ? "#fff" : color,
+                                    border: `1.5px solid ${color}`,
+                                  }}
+                                  onClick={() => setEditPriority(editPriority === key ? null : key)}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                            <input
+                              type="date"
+                              style={{ ...s.dateInput, fontSize: 11 }}
+                              value={editDate}
+                              onChange={e => setEditDate(e.target.value)}
+                            />
+                          </div>
+                          <div style={{ display: "flex", gap: 8, paddingBottom: 4 }}>
+                            <button style={s.editSaveBtn} onClick={commitEdit}>Speichern</button>
+                            <button style={s.editCancelBtn} onClick={() => setEditing(null)}>Abbrechen</button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <span
+                            style={{
+                              ...s.taskText,
+                              color: todo.done ? "#8e8e93" : "#000",
+                              textDecoration: todo.done ? "line-through" : "none",
+                              display: "block",
+                            }}
+                            onDoubleClick={() => !todo.done && startEdit(todo)}
+                          >
+                            {todo.text}
+                          </span>
+                          {/* Meta row */}
+                          {(prio || dateInfo) && !todo.done && (
+                            <div style={s.metaRow}>
+                              {prio && (
+                                <span style={{ ...s.metaChip, color: prio.color, border: `1px solid ${prio.color}` }}>
+                                  {prio.label}
+                                </span>
+                              )}
+                              {dateInfo && (
+                                <span style={{
+                                  ...s.metaChip,
+                                  color: dateInfo.overdue ? "#ff3b30" : "#8e8e93",
+                                  border: `1px solid ${dateInfo.overdue ? "#ff3b30" : "#c7c7cc"}`,
+                                }}>
+                                  📅 {dateInfo.label}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+
+                    {!isEditing && (
+                      <button style={s.deleteCircle} onClick={() => handleRemove(todo.id)}>
+                        <span style={s.deleteX}>×</span>
+                      </button>
+                    )}
+                  </div>
+                  {i < filtered.length - 1 && <div style={s.divider} />}
                 </div>
-                {i < filtered.length - 1 && <div style={s.divider} />}
-              </div>
-            ))
+              );
+            })
           )}
         </div>
 
@@ -432,6 +573,40 @@ const s = {
     padding: 0,
   },
   addBtnInner: { color: "#fff", fontSize: 22, lineHeight: 1, marginTop: -2 },
+  extrasRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "0 16px 12px",
+    borderTop: "1px solid #f0f0f0",
+    paddingTop: 10,
+    flexWrap: "wrap",
+  },
+  extrasLeft: {
+    display: "flex",
+    gap: 6,
+    flex: 1,
+  },
+  priorityPill: {
+    borderRadius: 20,
+    padding: "3px 10px",
+    fontSize: 12,
+    fontWeight: 500,
+    cursor: "pointer",
+    fontFamily: "inherit",
+    transition: "all 0.15s ease",
+    whiteSpace: "nowrap",
+  },
+  dateInput: {
+    border: "1.5px solid #c7c7cc",
+    borderRadius: 8,
+    padding: "3px 8px",
+    fontSize: 12,
+    fontFamily: "inherit",
+    color: "#333",
+    background: "transparent",
+    outline: "none",
+  },
   row: {
     display: "flex",
     alignItems: "center",
@@ -453,12 +628,55 @@ const s = {
     padding: 0,
   },
   taskText: {
-    flex: 1,
     fontSize: 17,
     letterSpacing: -0.2,
     lineHeight: 1.3,
     transition: "color 0.2s",
     wordBreak: "break-word",
+  },
+  metaRow: {
+    display: "flex",
+    gap: 6,
+    marginTop: 4,
+    flexWrap: "wrap",
+  },
+  metaChip: {
+    fontSize: 11,
+    borderRadius: 6,
+    padding: "1px 7px",
+    fontWeight: 500,
+  },
+  editInput: {
+    border: "none",
+    outline: "none",
+    background: "transparent",
+    fontFamily: "inherit",
+    padding: 0,
+    margin: 0,
+    width: "100%",
+    caretColor: "#007AFF",
+    display: "block",
+  },
+  editSaveBtn: {
+    background: "#007AFF",
+    color: "#fff",
+    border: "none",
+    borderRadius: 8,
+    padding: "5px 14px",
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: "pointer",
+    fontFamily: "inherit",
+  },
+  editCancelBtn: {
+    background: "transparent",
+    color: "#8e8e93",
+    border: "none",
+    borderRadius: 8,
+    padding: "5px 10px",
+    fontSize: 13,
+    cursor: "pointer",
+    fontFamily: "inherit",
   },
   deleteCircle: {
     width: 22,
@@ -498,15 +716,5 @@ const s = {
     fontSize: 13,
     color: "#8e8e93",
     padding: "8px 0 0",
-  },
-  editInput: {
-    border: "none",
-    outline: "none",
-    background: "transparent",
-    fontFamily: "inherit",
-    padding: 0,
-    margin: 0,
-    width: "100%",
-    caretColor: "#007AFF",
   },
 };
